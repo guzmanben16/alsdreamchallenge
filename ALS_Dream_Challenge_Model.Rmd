@@ -1,0 +1,236 @@
+---
+title: "ALS_Dream_Challenge: Clusters_Feature_Selector"
+author: "Benedict Guzman"
+date: "November 26, 2018"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+```{r include=FALSE, results='hide'}
+library(tidyverse)
+library(RCurl)
+library(ggplot2)
+library(ggfortify)
+library(dplyr)
+library(factoextra)
+library(cluster)
+library(randomForest)
+library(caret)
+library(ggpubr)
+library(gridExtra)
+```
+
+####**I. Introduction**
+
+In this section, our goal is to organize the patients into unique clusters based on their common features. The clustering method that we will use is Kmeans clustering. Once the clusters have been established, we will perform recursive feature selection via random forests to select the top 6 important features, which will be used in create prediction models later on. Finally, we will perform exploratory data analysis on each of the clusters to determine interesting relationships between variables and between the clusters. 
+
+####**II.Kmeans Clustering**
+
+```{r message=FALSE, warning=FALSE}
+ALS_FINAL <- read_csv("ALS_FINAL_Re.csv")
+ALS_FINAL <- ALS_FINAL %>% select(-X1)
+head(ALS_FINAL)
+dim(ALS_FINAL)
+```
+
+```{r}
+#the optimal number of clusters is 2 or 4
+fviz_nbclust(ALS_FINAL, kmeans, method = "silhouette")
+```
+
+As seen above, the two peaks are located at 2 or 3 clusters, but the silhouette method indicates 3 as the best. However, when we indicated 3 as the number clusters in the "centers" argument of the kmeans function, the third cluster had a really smally sample size (~50). Consequently, we decided to adhere to 2 clusters as the number of centroids. 
+
+```{r}
+#perform kmeans clustering
+cluster<-kmeans(ALS_FINAL[,-1], centers =  2)
+clusters <- cluster$cluster
+training_set_clusters <- ALS_FINAL %>% mutate(Cluster_Number=clusters)
+#first cluster
+training_set_cluster_1 <- training_set_clusters %>% filter(Cluster_Number==1) %>% select(-subject_id)
+training_set_cluster_1 <- as.data.frame(training_set_cluster_1)
+dim(training_set_cluster_1)
+#second cluster
+training_set_cluster_2 <- training_set_clusters %>% filter(Cluster_Number==2) %>% select(-subject_id)
+training_set_cluster_2 <- as.data.frame(training_set_cluster_2)
+dim(training_set_cluster_2)
+```
+
+```{r}
+training_set_clusters$Cluster_Number <- as.factor(training_set_clusters$Cluster_Number)
+autoplot(cluster, data=training_set_clusters, colour="Cluster_Number") + labs(title="Kmeans Clustering", x="PC1", y="PC2", color="Cluster_Number", caption="Figure 1.1")
+
+```
+
+<br>
+
+###**II. Recursive Feature Selection with Random Forests**
+
+```{r}
+set.seed(134)
+control <- rfeControl(functions=rfFuncs, method="cv", number=10)
+#cluster 1 top features
+cluster1_features <- rfe(training_set_cluster_1[,2:ncol(training_set_cluster_1)], training_set_cluster_1[,1], sizes=c(2:ncol(training_set_cluster_1)), rfeControl=control)
+print(cluster1_features)
+plot(cluster1_features, type = c("g", "o"))
+# list the chosen features
+predictors(cluster1_features, 6)
+
+#cluster 2 top features
+cluster2_features <- rfe(training_set_cluster_2[,2:ncol(training_set_cluster_2)], training_set_cluster_2[,1], sizes=c(2:ncol(training_set_cluster_2)), rfeControl=control)
+print(cluster2_features)
+plot(cluster2_features, type = c("g", "o"))
+# list the chosen features
+predictors(cluster2_features, 6)
+```
+
+Based on recursive feature selection:
+
+Cluster 1: Site_of_Onset, Q2_Salivation, Q3_Swallowing, Subject_Liters_Trial_1,  Q7_Turning_in_Bed, and study_arm are the top 6 most important predictive variables.
+
+Cluster 2: Q3_Swallowing, Q2_Salivation, Site_of_Onset, Subject_Liters_Trial_1, ALSFRS_Total, Q5a_Cutting_without_Gastrostomy are the top 6 most important predictive variables.
+
+<br>
+
+###**III. Select the 6 Features and Create CSV files for each of the clusters**
+
+Now that we have determined the top features for prediction for each cluster, two separate csv files will be created, which will be used for the prediction algorithms. 
+
+```{r}
+training_set_cluster_1_file <- training_set_clusters %>% filter(Cluster_Number==1) %>% select(subject_id, ALSFRS_Slope, Q3_Swallowing, Q2_Salivation, Site_of_Onset, Subject_Liters_Trial_1, Q7_Turning_in_Bed, Study_Arm  )
+write.csv(training_set_cluster_1_file, file = "cluster_1.csv")
+
+#cluster 2
+training_set_cluster_2_file <- training_set_clusters %>% filter(Cluster_Number==2) %>% select(subject_id, ALSFRS_Slope, Site_of_Onset, Q2_Salivation, Q3_Swallowing, Subject_Liters_Trial_1, ALSFRS_Total, Q5a_Cutting_without_Gastrostomy )
+write.csv(training_set_cluster_2_file, file = "cluster_2.csv")
+```
+
+<br>
+
+####**IV:EDA Analysis of the Clusters**
+
+```{r}
+training_set_cluster_1_file <- training_set_clusters %>% filter(Cluster_Number==1)
+write.csv(training_set_cluster_1_file, file = "cluster_1_features.csv")
+
+#cluster 2
+training_set_cluster_2_file <- training_set_clusters %>% filter(Cluster_Number==2) 
+write.csv(training_set_cluster_2_file, file = "cluster_2_features.csv")
+```
+
+```{r message=FALSE, warning=FALSE}
+cluster_1_features <- read_csv("cluster_1_features.csv")
+cluster_2_features <- read_csv("cluster_2_features.csv")
+features_eda <- rbind(cluster_1_features,cluster_2_features)
+```
+
+**A. ALSFRS Total Score**
+
+Motor neuron degeneration is measured in ALS patients via the ALSFRS Total Scoring System. It is comprised of 10 assessments of Speech, Salivation, and Ability to Swallow,  Handwriting, Cutting (with and without Gastrostomy-feeding tube), Dressing and Hygiene, Turning in Bed, Walking, Climbing Stairs, and Respiratory. Each of these parameters are scored from 0 (meaning the function is completely lost) to 4 (normal function). Needless to say, patients scoring closer to 40 are more normal and their symptom severity is minimal. 
+
+As a group, we wanted to explore the differences in the ALSFRS Total scores in both clusters we created. In addition, we wanted to determine if there are differences in ALSFRS scores between genders. 
+
+***General Trends***
+
+```{r echo=TRUE}
+#ALSFRS Total Score distribution
+features_eda$Cluster_Number <- factor(features_eda$Cluster_Number)
+ALSFRS_score_plot <- ggplot(data = features_eda, aes( x = Cluster_Number , y = ALSFRS_Total, fill=Cluster_Number))+ 
+  geom_boxplot() + scale_fill_brewer(palette="Set2")+labs(title = "ALSFRS Total Score in the 2 Clusters (0-90 Days)", x = "Cluster", y = "ALSFRS_Total", fill="Cluster_Number", caption = "Figure 1.2")
+ALSFRS_score_plot
+```
+
+Figure 1.2 shows that patients in cluster 1 have a higher average ALSFRS Total score (28.80) based on assessments performed within 90 days after clinical observation started than patients in cluster 2 (28.71). In other words, ALS symtpoms for patients in cluster 1 are either very minimal or less severe than in patients in cluster 2 at the early stages. 
+
+##
+
+***ALSFRS Total Score According to Gender***
+
+```{r}
+#coerce sex variable into factor
+features_eda$Sex <- factor(features_eda$Sex, levels = c("1", "2"), labels = c("Male", "Female"))
+
+ggplot(data = features_eda, aes( x = Sex, y = ALSFRS_Total, fill = Cluster_Number)) +   geom_boxplot() + scale_fill_brewer(palette="Set1")+labs(title = "ALSFRS Score Based on Gender (0-90 Days)", x = "Sex", y = "ALSFRS Score", fill="Cluster_Number", caption = "Figure 1.3")
+```
+
+The plot above suggests that there is a discrepancy in ALSFRS scores between genders. It appears that symptom severity is much more pronounced in women that in men. 
+
+<br>
+
+**B. Site of Onset**
+
+The site of disease onset varies from patient to patient, and for the purpose of this project, we focused on the three most common types for all ALS patients:
+
+1. Bulbar: symptoms first manifest on muscles that control speaking and swallowing
+
+2. Limb: symptoms first manifest on the limbs
+
+3. Limb and Bulbar: combination of the two previous disease onset sites
+
+We wanted to determine what is the most common onsite site in the 2 clusters. 
+
+```{r}
+#coerce onset variable into factor
+features_eda$Site_of_Onset <- factor(features_eda$Site_of_Onset, levels = c("1", "2", "3"), labels = c("Bulbar", "Limb", "Limb_Bulbar"))
+
+site_of_onset_plot <- ggplot(data = features_eda) + 
+geom_bar(mapping = aes(x = Site_of_Onset, fill=Cluster_Number)) + scale_fill_brewer(palette="Accent")+labs(title = "Types of Sites of Onset", x = "Site_of_Onset", y = "Cases", caption = "Figure 1.3") + theme(legend.position = c(0.85, 0.5))
+site_of_onset_plot
+```
+
+The plots convey that the limb is the most common type of site of symptom onset in ALS followed by bulbar. Notice that both limb and bulbar onset sites are the least common and it is only found in cluster 1. 
+
+<br>
+
+**C. Weight and Forced Vital Capacity**
+
+There are various ALS symptoms that manifest in patients at different times points of the disease progression. Regardless, one of the main symptoms is weight loss which is due to muscle atrophy, weakness, and reduced physical activity. Another is difficulty of breathing due to impaired breathing function. As a matter of fact, 
+it is the main cause of death of ALS patients. 
+
+One of the main assessment protocols to measure respiration functionality is the Forced Vital Capacity. Specifically, it is defined as the total volume of air (in liters) that the patient can expire after inspiration. In scientific literature, FVC is typically recorded in percentage form (100% considered as normal, 80% as deteriorating, and 50% as very low breathing function which possibly indicates the need for the assistance of a ventilator), but the PRO-ACT reported FVC mainly in liters.
+
+That being said, we wanted to explore the average weights and FVC of patients in cluster 1 and cluster 2, if there is any. 
+
+```{r}
+ALSFRS_Average <-  features_eda %>% group_by(Cluster_Number) %>% summarise( Average_Creatinine=mean(Creatinine), Average_FVC=mean(Subject_Liters_Trial_1), Average_Weight=mean(Weight))
+as.data.frame(ALSFRS_Average)
+```
+
+```{r}
+#weight
+weight <- ggdotchart(ALSFRS_Average, x = "Cluster_Number", y = "Average_Weight",
+           color = "Cluster_Number",                                #
+           palette = c("#00AFBB", "#E7B800"),  
+           sorting = "descending",                       
+           add = "segments",                            
+           rotate = TRUE,                           
+           group = "Cluster_Number",                                
+           dot.size = 10,                                
+           label = round(ALSFRS_Average$Average_Weight),   
+           font.label = list(color = "white", size = 9, vjust = 0.5),              
+           ggtheme = theme_pubr()) +labs(title = "Average Weight (in kg) 
+Between the Clusters (0-90 Days)", caption = "Figure 1.4")
+#FVC
+FVC <- ggplot(data = features_eda, aes( x = Cluster_Number, y =Subject_Liters_Trial_1 , fill = Cluster_Number)) + geom_boxplot() + scale_fill_brewer(palette="Pastel1")+labs(title = "FVC (in Liters) Between         
+Clusters (0-90 Days)", x = "Cluster_Number", y = "FVC", fill="Cluster_Number", caption = "Figure 1.5") +  theme_bw() +geom_text(data = ALSFRS_Average, aes(label = Average_FVC, y = Average_FVC + 0.08))
+grid.arrange(weight, FVC+theme(legend.position = 'none'), widths=c(2,2), ncol=2)
+```
+
+Curiously, patients in cluster 1 seems to be of healthier states as they have an average weight of 73.9 kg and average of FVC of 3.19 liters, while cluster 2 patients are 6 kg lighter, weighing an average of 67.32 kg and they also have a lower FVC average of 3.14. This possibly suggests that patients in the latter group are experiencing an early onset of weight loss and breathing dysfunction. 
+
+<br>
+
+**D. Creatinine**
+
+The last variable we wanted compare between the 2 clusters is creatinine. Although this blood test is mainly used to gauge kidney function, creatinine has been recently linked to ALS progression and survival according to a study in the University of Turin in Italy. The normal range for creatinine is approxmitately 53-106 mmol/L. In general, the lower the creatinine values, the poorer the prognosis and survival rate of the patient. 
+
+```{r}
+Creatinine <- ggplot(data = features_eda, aes( x = Cluster_Number, y =Creatinine , fill = Cluster_Number)) + geom_boxplot() + scale_fill_brewer(palette="Pastel2")+labs(title = "Creatinine (mmMol/L) Between   
+Clusters (0-90 Days)", x = "Cluster_Number", y = "Creatinine", fill="Cluster_Number", caption = "Figure 1.6") +  theme_bw() +geom_text(data = ALSFRS_Average, aes(label = Average_Creatinine, y = Average_Creatinine + 0.50))
+Creatinine
+```
+
+As seen above, patients in cluster 2 have a higher average of creatinine levels of 72.03 than in patients in cluster 1 (64.07). 
+
+Altogether, cluster 1 patients are characterized by a lower 0-3 Month ALSFRS Score, Forced Vital Capacity, Weight, and Creatinine levels than in patients in cluster 2. Needless to say, these factors convey that cluster 1 may likely have a poorer prognosis and survival rate than patients in cluster 2. 
