@@ -1,0 +1,675 @@
+---
+title: 'ALS_Dream_Challenge: ALSFRS Slope Prediction'
+author: "Benedict Guzman"
+date: "November 26, 2018"
+output: html_document
+---
+
+<br>
+
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+```{r include=FALSE, results='hide'}
+library(tidyverse)
+library(RCurl)
+library(ggplot2)
+library(ggfortify)
+library(dplyr)
+library(factoextra)
+library(cluster)
+library(randomForest)
+library(tree)
+library(caret)
+library(gbm)
+library(Metrics)
+library(glmnet)
+library(gridExtra)
+```
+
+####**I. Introduction**
+
+To predict the 3-12 month ALSFRS Slope progression, we trained and validated 4 regression algorithms (2 Tree-Based Models and 2 Regression Shrinkage Models): Random Forests (randomForest library), Gradient Boosting Machine (gbm library), Lasso Regression, and Elastic Net (both from glmnet library). 60% of the patients in each of the 2 unique clusters determined earlier will be designated as the training set and the remaining 40% will be used for the validation/testing set.
+
+Since the value we want to predict is a continuous variable, the evaluation metrics that we utilized were the Mean Squared Error (MSE), Root Mean Squared Error (RMSE), and Mean Absolute Error (MAE). 
+
+In simple terms, the mean squared error calculates the standard deviation of the residuals, which are the prediction errors, from the best fit line. RMSE is determined just by taking the square root of the MSE. Both are modeled in the following equations:
+
+$$MSE=\frac{1}{n}\sum_{i=1}^{n}(y_i - \hat{y_i})^2$$
+
+
+$$RMSE=\sqrt{MSE}$$
+
+Absolute error, by definition, is just the difference between the predicted value and the ground truth value. Therefore, mean absolute error is just calculating the average of all the absolute errors.
+
+$$MAE=\frac{1}{n}\sum_{i=1}^{n}(y_i - y)$$
+
+The predictive performance of all our models will be compared to the baseline RMSE, MSE, and MAE, which is derrived from the the mean of the ALSFRS Slope in the pre-prediction training set minus the ALSFRS slope in the pre-prediction test set. 
+
+<br>
+
+####**II. Split the Clusters into Training Set and Test Set**
+
+***Split Cluster 1 into Training and Test Set***
+
+```{r message=FALSE, warning=FALSE}
+#open the csv file created for ALS patients designated in cluster 1 from the k-means algorithm
+CLUSTER_1 <- read_csv("cluster_1.csv")
+CLUSTER_1 <- CLUSTER_1 %>% select(-X1)
+head(CLUSTER_1)
+```
+```{r}
+#60% of the samples cluster will be used for training set 
+training_set_size <- floor(0.60 * nrow(CLUSTER_1))
+#for reproducibility
+set.seed(543)
+#out of the 3026 samples, pick 1815 samples(based on the training_set_size) randomly for the training set
+train_samples <- sample(seq_len(nrow(CLUSTER_1)), size = training_set_size)
+training_set_clus1 <- CLUSTER_1[train_samples, ]
+#the remaining 1211 samples that were not included in the training set would be designated as the test set 
+test_set_clus1 <- CLUSTER_1[-train_samples, ]
+
+dim(training_set_clus1)
+dim(test_set_clus1)
+```
+
+##
+
+***Baseline RMSE, MSE, MAE for Cluster 1***
+
+```{r}
+#take the RMSE of the mean of the pre-prediction ALSFRS_slope in the training set and the ALSFRS_slope in the test set
+baseline_mean_clus1 <- mean(training_set_clus1$ALSFRS_Slope)
+RMSE_baseline_clus1 <- rmse(baseline_mean_clus1,test_set_clus1$ALSFRS_Slope )
+RMSE_baseline_clus1
+#take the MSE of the mean of the pre-prediction ALSFRS_slope in the training set and the ALSFRS_slope in the test set
+MSE_baseline_clus1 <- mse(baseline_mean_clus1,test_set_clus1$ALSFRS_Slope )
+MSE_baseline_clus1
+#take the MSE of the mean of the pre-prediction ALSFRS_slope in the training set and the ALSFRS_slope in the test set
+MAE_baseline_clus1 <- mean(abs(baseline_mean_clus1-test_set_clus1$ALSFRS_Slope))
+MAE_baseline_clus1
+```
+
+##
+
+***Split Cluster 2 into Training and Test Set***
+
+```{r message=FALSE, warning=FALSE}
+CLUSTER_2 <- read_csv("cluster_2.csv")
+CLUSTER_2 <- CLUSTER_2 %>% select(-X1)
+head(CLUSTER_2)
+```
+```{r}
+training_set_size <- floor(0.60 * nrow(CLUSTER_2))
+#for reproducibility
+set.seed(543)
+#out of the 113 samples, pick 67 samples(based on the training_set_size) randomly for the training set
+train_samples <- sample(seq_len(nrow(CLUSTER_2)), size = training_set_size)
+training_set_clus2 <- CLUSTER_2[train_samples, ]
+#the remaining 46 samples that were not included in the training set would be designated as the test set 
+test_set_clus2 <- CLUSTER_2[-train_samples, ]
+
+dim(training_set_clus2)
+dim(test_set_clus2)
+```
+
+##
+
+***Baseline RMSE, MSE. MAE for Cluster 2***'
+
+```{r}
+#take the RMSE of the mean of the pre-prediction ALSFRS_slope in the training set and the ALSFRS_slope in the test set
+baseline_mean_clus2 <- mean(training_set_clus2$ALSFRS_Slope)
+RMSE_baseline_clus2 <- rmse(baseline_mean_clus2,test_set_clus2$ALSFRS_Slope )
+RMSE_baseline_clus2
+#take the MSE of the mean of the pre-prediction ALSFRS_slope in the training set and the ALSFRS_slope in the test set
+MSE_baseline_clus2 <- mse(baseline_mean_clus2,test_set_clus2$ALSFRS_Slope )
+MSE_baseline_clus2
+#take the MSE of the mean of the pre-prediction ALSFRS_slope in the training set and the ALSFRS_slope in the test set
+MAE_baseline_clus2 <- mean(abs(baseline_mean_clus2-test_set_clus2$ALSFRS_Slope))
+MAE_baseline_clus2
+```
+
+<br>
+
+####**II.Tree-Based Method: Random Forests**
+
+The first algorithm we trained and validated is Random Forests from the randomforests library. By definition, Random Forests is an ensemble of decision trees and incorporates randomness via bootstrapping. The beauty about this model is that it is not prone to overfitting and it can be used for both categorization and regression.
+
+For the purpose of tuning our Random Forests model, we wanted to determine the optimal mtry (Number of variables randomly sampled as candidates at each split) hyperparameter. To perform this task, we initially set the train control hyperparameter into out of bag method, and the tune grid hyperparameter set into mtry range from 1 to 10. We then ran the models, and ultimately, we determined that for random forests algorithm for cluster 1 should be set to mtry=1 and random forests algorithm for cluster 2 should be set to mtry=2. Using these values, the models were re-trained and then validated on our test set. 
+
+**A. Cluster 1**
+
+***Train Random Forests Model***
+
+```{r message=FALSE, warning=FALSE}
+#for reproducibility
+set.seed(30495)
+#traincontrol hyperparameter
+oob = trainControl(method = "oob")
+#tuneGrid hyperparameter
+rf_grid =  expand.grid(mtry = 1:10)
+#tuning the random forests model
+RF_slope_clus1_ <- train(ALSFRS_Slope ~ . -subject_id, data=training_set_clus1, method="rf", trControl=oob, tuneGrid=rf_grid, importance = TRUE, oob.times = 15, confusion = TRUE)
+#best mtry parameter is 1
+RF_slope_clus1_$bestTune
+```
+
+##
+
+```{r message=FALSE, warning=FALSE}
+#rerun random forests with mtry=1
+RF_slope_clus1 <- randomForest(ALSFRS_Slope ~ . -subject_id, data=training_set_clus1, trControl=oob, tuneGrid=rf_grid, mtry=3, importance = TRUE, oob.times = 15, confusion = TRUE)
+#best mtry parameter is 1
+RF_slope_clus1
+```
+
+##
+
+***Apply Random Forest Model to Test Set and Evaluate via RMSE, MSE, and MAE***
+
+```{r message=FALSE, warning=FALSE}
+test_RF_slope_clus1 <- predict (RF_slope_clus1 , newdata =test_set_clus1)
+```
+```{r message=FALSE, warning=FALSE}
+#RMSE
+rf_rmse_clus1 <- rmse(test_set_clus1$ALSFRS_Slope, test_RF_slope_clus1)
+rf_rmse_clus1
+#MSE
+rf_mse_clus1 <- mse(test_set_clus1$ALSFRS_Slope, test_RF_slope_clus1)
+rf_mse_clus1
+#MAE
+rf_mae_clus1 <- mean(abs(test_RF_slope_clus1-test_set_clus1$ALSFRS_Slope))
+rf_mae_clus1
+
+```
+
+<br>
+
+**B. Cluster 2**
+
+***Create Random Forests Model***
+
+```{r message=FALSE, warning=FALSE}
+#for reproducibility
+set.seed(30495)
+#train the random forests model using the tuneGrid and trainControl defined in the previous chunk
+RF_slope_clus2_ <- train(ALSFRS_Slope ~ . -subject_id, data=training_set_clus2, method="rf", tuneGrid=rf_grid, trControl=oob, importance = TRUE, oob.times = 15, confusion = TRUE)
+#mtry=3 is the best
+RF_slope_clus2_$bestTune
+```
+
+##
+
+```{r message=FALSE, warning=FALSE}
+#rerun random forests model with mtry=3
+RF_slope_clus2 <- randomForest(ALSFRS_Slope ~ . -subject_id, data=training_set_clus2, tuneGrid=rf_grid, trControl=oob, importance = TRUE, oob.times = 15, confusion = TRUE, mtry=1)
+RF_slope_clus2
+```
+
+##
+
+***Apply Random Forest Model to Test Set and Evaluate via RMSE, MSE, and MAE***
+
+```{r message=FALSE, warning=FALSE}
+test_RF_slope_clus2 <- predict (RF_slope_clus2 , newdata =test_set_clus2)
+```
+```{r message=FALSE, warning=FALSE}
+#RMSE
+rf_rmse_clus2 <- rmse(test_set_clus2$ALSFRS_Slope, test_RF_slope_clus2)
+rf_rmse_clus2
+#MSE
+rf_mse_clus2 <- mse(test_set_clus2$ALSFRS_Slope, test_RF_slope_clus2)
+rf_mse_clus2
+#MAE
+rf_mae_clus2 <- mean(abs(test_RF_slope_clus2-test_set_clus2$ALSFRS_Slope))
+rf_mae_clus2
+```
+
+<br>
+
+####**III.Tree-Based Method: Gradient Boosting Machine (GBM)**
+
+Another tree-based model we implemented is the Gradient Boosting Machine (from the gbm library), which is also a collection of trees. But note that the trees are grown sequentially.
+
+The main hyperparameters that we wanted to tune are the following:
+
+1. interaction.depth: number of splits for each tree
+
+2. n.trees: total number of trees to be incorporated into the model
+
+3. shrinkage: sets the learning rate
+
+4. n.minobsinnode: minimum number of samples in a node of a tree
+
+To determine the exact values for these hyperparameters, we set the tune grid hyperparameter into a grid with an interaction.depth from 1 to 5, n.trees from 1 to 6 multiplied by 500, shrinkage of 0.001, 0.01, or 0.1, and n.minobsinnode of 10. In addition, we set the trainControl hyperparameter to 5-fold cross validation. Once we determined the exact values for the abovementioned hyperparameters, we reran the gbm models and ultimately tested their predictive performance on our validation/testing set. 
+
+**A. Cluster 1**
+
+***Train Gradient Boosting Machine***
+
+```{r message=FALSE, warning=FALSE}
+#use this grid for tuneGrid
+gbm_grid =  expand.grid(interaction.depth = 1:5,
+                        n.trees = (1:6) * 500,
+                        shrinkage = c(0.001, 0.01, 0.1),
+                        n.minobsinnode = 10)
+#perform cross validation for trainControl hyperparameter
+cv_5 = trainControl(method = "cv", number = 5)
+#for reproducibility
+set.seed(30495)
+# train the model
+gbm_clus1_<-train(ALSFRS_Slope ~ . -subject_id, data = training_set_clus1 , method = 'gbm', trControl=cv_5, tuneGrid=gbm_grid, verbose = F)
+#optimal values for interaction.depth, n.trees, shrinkage, and n.minobsinnode
+gbm_clus1_$bestTune
+plot(gbm_clus1_)
+```
+
+```{r message=FALSE, warning=FALSE}
+#rerun the algorithm with the optimal hyperparameters
+gbm_clus1<-gbm(formula=ALSFRS_Slope ~ . -subject_id, data = training_set_clus1, n.trees=1000, interaction.depth=5, shrinkage=0.001, n.minobsinnode=10,verbose = F)
+```
+
+##
+
+***Apply Gradient Boosting Method to Test Set and Evaluate via RMSE, MSE, and MAE***
+
+```{r message=FALSE, warning=FALSE}
+#apply gbm model to test set
+test_gbm_slope_clus1 <- predict (gbm_clus1, n.trees = gbm_clus1$n.trees, test_set_clus1)
+
+#RMSE
+gbm_rmse_clus1 <- rmse(test_set_clus1$ALSFRS_Slope, test_gbm_slope_clus1)
+gbm_rmse_clus1
+#MSE
+gbm_mse_clus1 <- mse(test_set_clus1$ALSFRS_Slope, test_gbm_slope_clus1)
+gbm_mse_clus1
+#MAE
+gbm_mae_clus1 <- mean(abs(test_gbm_slope_clus1-test_set_clus1$ALSFRS_Slope))
+gbm_mae_clus1
+```
+
+##
+
+**B. Cluster 2**
+
+***Create Gradient Boosting Method Model***
+
+```{r message=FALSE, warning=FALSE}
+set.seed(30495)
+#use the tuneGrid and trainControl settings defined above to determine the optimal hyperparameters for interaction.depth, shrinkage, n.trees, n.minobsinnode
+gbm_clus2_ <-train(ALSFRS_Slope ~ . -subject_id, data = training_set_clus2 , method = 'gbm',trControl=cv_5, tuneGrid=gbm_grid, verbose = F)
+gbm_clus2_$bestTune
+plot(gbm_clus2_)
+```
+
+##
+
+```{r message=FALSE, warning=FALSE}
+#rerun the gbm model with the optimal hyperparameters
+gbm_clus2 <- gbm(formula=ALSFRS_Slope ~ . -subject_id, data = training_set_clus2, n.trees=3000, interaction.depth=1, shrinkage=0.001, n.minobsinnode=10, verbose = F)
+gbm_clus2
+```
+
+##
+
+***Apply Gradient Boosting Method to Test Set and Evaluate via RMSE, MSE, and MAE***
+
+```{r message=FALSE, warning=FALSE}
+#apply gbm model on test set
+test_gbm_slope_clus2 <- predict(gbm_clus2, n.trees = gbm_clus2$n.trees, test_set_clus2)
+
+#RMSE
+gbm_rmse_clus2 <- rmse(test_set_clus2$ALSFRS_Slope, test_gbm_slope_clus2)
+gbm_rmse_clus2
+#MSE
+gbm_mse_clus2 <- mse(test_set_clus2$ALSFRS_Slope, test_gbm_slope_clus2)
+gbm_mse_clus2
+#MAE
+gbm_mae_clus2 <- mean(abs(test_gbm_slope_clus2-test_set_clus2$ALSFRS_Slope))
+gbm_mae_clus2
+```
+
+<br>
+
+####**IV.Regression Shrinkage Method: Lasso Regression**
+
+The third model that we used is the least absolute shrinkage and selection operator (LASSO) regression from the glmnet library. As the its name partially gives it away, lasso regression's main goal is to select variables that minimizes the prediction error. To be specific, a shrinkage process is performed; variables that have a zero coefficient after shrinkage are eliminated and variables with non-zero coefficient after shrinkage are retained and thus considered important for prediction. 
+
+**Cluster 1**
+
+***Train Lasso Regression***
+
+```{r}
+# Custom Control Parameters
+custom <- trainControl(method = "repeatedcv", number=10, repeats = 5, verboseIter = F)
+#train lasso regression model
+set.seed(1234)
+lasso_clus1 <- train(ALSFRS_Slope ~ .-subject_id,data=training_set_clus1, method="glmnet", tuneGrid=expand.grid(alpha=1,lambda=seq(0.0001,0.2,length=5)), trControl=custom )
+```
+
+```{r}
+par(mfrow=c(1,2))
+a <- plot(lasso_clus1)
+a
+b <- plot(lasso_clus1$finalModel,xvar="lambda", label=T)
+c <- plot(lasso_clus1$finalModel,xvar="dev",label=T)
+
+```
+
+##
+
+***Apply Lasso Regression Model to Test Set and Evaluate via RMSE, MSE, and MAE***
+
+```{r}
+#apply test set to model
+test_lasso_slope_clus1 <- predict(lasso_clus1 , newdata =test_set_clus1)
+
+#RMSE
+lasso_rmse_clus1 <- rmse(test_set_clus1$ALSFRS_Slope, test_lasso_slope_clus1)
+lasso_rmse_clus1
+#MSE
+lasso_mse_clus1 <- mse(test_set_clus1$ALSFRS_Slope, test_gbm_slope_clus1)
+lasso_mse_clus1
+#MAE
+lasso_mae_clus1 <- mean(abs(test_lasso_slope_clus1-test_set_clus1$ALSFRS_Slope))
+lasso_mae_clus1
+```
+
+##
+
+**Cluster 2**
+
+***Train Lasso Regression***
+
+```{r}
+# Lasso Regression
+set.seed(1234)
+lasso_clus2 <- train(ALSFRS_Slope ~ .-subject_id,data=training_set_clus2, method="glmnet", tuneGrid=expand.grid(alpha=1,lambda=seq(0.0001,0.2,length=5)), trControl=custom )
+```
+
+```{r}
+par(mfrow=c(1,2))
+a <- plot(lasso_clus2)
+a
+b <- plot(lasso_clus2$finalModel,xvar="lambda", label=T)
+c <- plot(lasso_clus2$finalModel,xvar="dev",label=T)
+
+```
+
+##
+
+***Apply Lasso Regression Model to Test Set and Evaluate via RMSE, MSE, and MAE***
+
+```{r}
+test_lasso_slope_clus2 <- predict(lasso_clus2 , newdata =test_set_clus2)
+
+#RMSE
+lasso_rmse_clus2 <- rmse(test_set_clus2$ALSFRS_Slope, test_lasso_slope_clus2)
+lasso_rmse_clus2
+#MSE
+lasso_mse_clus2 <- mse(test_set_clus2$ALSFRS_Slope, test_gbm_slope_clus2)
+lasso_mse_clus2
+#MAE
+lasso_mae_clus2 <- mean(abs(test_gbm_slope_clus2-test_set_clus2$ALSFRS_Slope))
+lasso_mae_clus1
+```
+
+<br>
+
+####**V. Elastic Net**
+
+The last algorithm we trained was Elastic Net, which is also from the glmnet library. By definition, elastic net is a hybrid regularization method of both ridge and lasso regression. Specifically, it penalizes both coefficients and square of coefficients of variables. 
+
+**Cluster 1**
+
+***Train Elastic Net Model***
+
+```{r message=FALSE, warning=FALSE}
+#for reproducibility
+set.seed(1234)
+#use this setting for trainControl
+custom <- trainControl(method = "repeatedcv", number=10, repeats = 5, verboseIter = F)
+#train elastic net model
+en_clus1 <- train(ALSFRS_Slope ~ .-subject_id, training_set_clus1, method="glmnet", tuneGrid=expand.grid(alpha=seq(0,1,length=10), lambda=seq(0.0001, 0.001, length=5)), trControl=custom)
+en_clus1
+```
+
+```{r message=FALSE, warning=FALSE}
+par(mfrow=c(1,2))
+a <- plot(en_clus1)
+a
+b <- plot(en_clus1$finalModel,xvar="lambda",label=T)
+c <- plot(en_clus1$finalModel,xvar="dev",label=T)
+```
+
+##
+
+***Apply GLMNET Elastic Net Model to Test Set and Evaluate via RMSE, MSE, and MAE***
+
+```{r message=FALSE, warning=FALSE}
+#apply model to test set
+test_en_slope_clus1 <- predict(en_clus1 , newdata =test_set_clus1)
+
+#RMSE
+en_rmse_clus1 <- rmse(test_set_clus1$ALSFRS_Slope, test_en_slope_clus1)
+en_rmse_clus1
+#MSE
+en_mse_clus1 <- mse(test_set_clus1$ALSFRS_Slope, test_en_slope_clus1)
+en_mse_clus1
+#MAE
+en_mae_clus1 <- mean(abs(test_en_slope_clus1-test_set_clus1$ALSFRS_Slope))
+en_mae_clus1
+```
+
+##
+
+**Cluster 2**
+
+***Create GLMNET Model: Elastic Net***
+
+```{r message=FALSE, warning=FALSE}
+#for reproducibility
+set.seed(1234)
+#train model using the trainControl hyperparameter in the previous chunk
+en_clus2 <- train(ALSFRS_Slope ~ .-subject_id, training_set_clus2, method="glmnet", tuneGrid=expand.grid(alpha=seq(0,1,length=10), lambda=seq(0.0001, 0.001, length=5)), trControl=custom)
+en_clus2
+```
+
+```{r message=FALSE, warning=FALSE}
+par(mfrow=c(1,2))
+a <- plot(en_clus2)
+a
+b <- plot(en_clus2$finalModel,xvar="lambda",label=T)
+c <- plot(en_clus2$finalModel,xvar="dev",label=T)
+```
+
+##
+
+***Apply Elastic Net Model to Test Set and Evaluate via RMSE, MSE, MAE***
+
+```{r message=FALSE, warning=FALSE}
+#apply on test set
+test_en_slope_clus2 <- predict(en_clus2, newdata =test_set_clus2)
+
+#RMSE
+en_rmse_clus2 <- rmse(test_set_clus2$ALSFRS_Slope, test_en_slope_clus2)
+en_rmse_clus2
+#MSE
+en_mse_clus2 <- mse(test_set_clus2$ALSFRS_Slope, test_en_slope_clus2)
+en_mse_clus2
+#MAE
+en_mae_clus2 <- mean(abs(test_en_slope_clus2-test_set_clus2$ALSFRS_Slope))
+en_mae_clus2
+```
+
+<br>
+
+####**VI. Comparing the Models: RMSE, MSE, and MAE**
+
+**A. Cluster 1**
+
+```{r}
+#create a data frame that combines all the RMSE, MSE, and MAE for all of the algorithms we trained and tested for cluster 1
+accuracy_cluster1 <- data.frame(Method = c("Baseline","Random_Forests", "GBM", "Lasso", "Elastic_Net"),RMSE=c(RMSE_baseline_clus1, rf_rmse_clus1, gbm_rmse_clus1, lasso_rmse_clus1, en_rmse_clus1),MSE=c(MSE_baseline_clus1,rf_mse_clus1,gbm_mse_clus1,lasso_mse_clus1,en_mse_clus1), MAE=c(MAE_baseline_clus1,rf_mae_clus1,gbm_mae_clus1,lasso_mae_clus1,en_mae_clus1))
+
+accuracy_cluster1
+```
+
+As seen from the table above, all of the models have a better predictive accuracy than the baseline model as indicated by lower RMSE, MSE, and MAE values. However, GBM outperformed all of the models with RMSE of 0.9326, MSE of 0.008697, and MAE of 0.04430. 
+
+##
+
+**B. Cluster 2**
+
+```{r}
+#create a data frame that combines all the RMSE, MSE, and MAE for all of the algorithms we trained and tested for cluster 2
+accuracy_cluster2 <- data.frame(Method = c("Baseline","Random_Forests", "GBM", "Lasso", "Elastic_Net"),RMSE=c(RMSE_baseline_clus2, rf_rmse_clus2, gbm_rmse_clus2, lasso_rmse_clus2, en_rmse_clus2),MSE=c(MSE_baseline_clus2,rf_mse_clus2,gbm_mse_clus2,lasso_mse_clus2,en_mse_clus2), MAE=c(MAE_baseline_clus2,rf_mae_clus2,gbm_mae_clus2,lasso_mae_clus2,en_mae_clus2))
+
+accuracy_cluster2
+```
+
+Similarly, all of the algorithms did better than the baseline model. Note this time that the best model for predicting the 3-12 Month ALSFRS Slope for cluster 2 is the Random Forest Model, with an RMSE of 0.0419, MSE of 0.00175, and MAE of 0.00333.
+
+<br>
+
+####**VII. Determine Goodness of Fit of Models via Actual vs. Predicted Plots**
+
+**A. Cluster 1**
+
+```{r}
+#create a data frame
+predictions_clus1 <- data.frame(actual = test_set_clus1$ALSFRS_Slope,
+                              Baseline = baseline_mean_clus1,
+                              Random_Forests = test_RF_slope_clus1,
+                              GBM = test_gbm_slope_clus1,
+                              Lasso = test_gbm_slope_clus1,
+                              Elastic_Net = test_en_slope_clus1)
+head(predictions_clus1)
+```
+
+##
+
+```{r}
+all_predictions_clus1 <- predictions_clus1 %>% gather(key = model,value = predictions,2:6)
+
+rf <- all_predictions_clus1 %>% filter(model=="Random_Forests")
+gbm <- all_predictions_clus1 %>% filter(model=="GBM")
+lasso <- all_predictions_clus1 %>% filter(model=="Lasso")
+elastic_net <- all_predictions_clus1 %>% filter(model=="Elastic_Net")
+```
+
+```{r}
+#random forests
+rf_plot_clus1<- ggplot(data = rf,aes(x = predictions, y = actual)) + 
+  geom_point(colour = "dodgerblue") + 
+  geom_smooth(method = "lm", colour = "darkorange")+
+  ggtitle("Predicted vs. Actual: Random Forests")
+#GBM
+gbm_plot_clus1 <- ggplot(data = gbm, aes(x = predictions, y = actual)) + 
+  geom_point(colour = "dodgerblue") + 
+  geom_smooth(method = "lm", colour = "darkorange") +
+  ggtitle("Predicted vs. Actual: GBM")
+#Lasso
+lasso_plot_clus1 <- ggplot(data = lasso,aes(x = predictions, y = actual)) + 
+  geom_point(colour = "dodgerblue") + 
+  geom_smooth(method = "lm", colour = "darkorange")+
+  ggtitle("Predicted vs. Actual: Lasso")
+#elastic net
+elastic_net_plot_clus1<- ggplot(data = elastic_net,aes(x = predictions, y = actual)) + 
+  geom_point(colour = "dodgerblue") +
+  geom_smooth(method = "lm", colour = "darkorange") +
+  ggtitle("Predicted vs. Actual: Elastic Net")
+```
+```{r echo=FALSE}
+grid.arrange(arrangeGrob(rf_plot_clus1, gbm_plot_clus1, ncol = 2))
+grid.arrange(arrangeGrob(lasso_plot_clus1, elastic_net_plot_clus1,ncol = 2))
+```
+
+In general, the predicted points in all of the models are almost concentrated symetrically in the line of best fit, which is one of the charactertics of models with good predictive accuracy. In addition, the predictive accuracy of the models (with GBM being the most accurate of all models) are corroborated by the low RMSE, MSE, and MAE values.
+
+##
+
+**B. Cluster 2**
+
+```{r}
+predictions_clus2 <-  data.frame(actual = test_set_clus2$ALSFRS_Slope,
+                              Baseline = baseline_mean_clus2,
+                              Random_Forests = test_RF_slope_clus2,
+                              GBM = test_gbm_slope_clus2,
+                              Lasso = test_gbm_slope_clus2,
+                              Elastic_Net = test_en_slope_clus2)
+head(predictions_clus2)
+```
+
+
+```{r}
+all_predictions_clus2 <- predictions_clus2 %>% gather(key = model,value = predictions,2:6)
+
+rf <- all_predictions_clus2 %>% filter(model=="Random_Forests")
+gbm <- all_predictions_clus2 %>% filter(model=="GBM")
+lasso <- all_predictions_clus2 %>% filter(model=="Lasso")
+elastic_net <- all_predictions_clus2 %>% filter(model=="Elastic_Net")
+```
+
+```{r}
+rf_plot_clus2<- ggplot(data = rf,aes(x = predictions, y = actual)) + 
+  geom_point(colour = "darkred", alpha=0.5) + 
+  geom_smooth(method = "lm", colour = "blue") +
+  ggtitle("Predicted vs. Actual: Random Forests")
+
+gbm_plot_clus2 <- ggplot(data = gbm,aes(x = predictions, y = actual)) + 
+  geom_point(colour = "darkred", alpha=0.5) + 
+  geom_smooth(method = "lm", colour = "blue") +
+  ggtitle("Predicted vs. Actual: GBM")
+
+lasso_plot_clus2<- ggplot(data = lasso,aes(x = predictions, y = actual)) + 
+  geom_point(colour = "darkred", alpha=0.5) + 
+  geom_smooth(method = "lm", colour = "blue") + 
+  ggtitle("Predicted vs. Actual: Lasso")
+
+elastic_net_plot_clus2<- ggplot(data = elastic_net,aes(x = predictions, y = actual)) + 
+  geom_point(colour = "darkred", alpha=0.5) + 
+  geom_smooth(method = "lm", colour = "blue")  +
+  ggtitle("Predicted vs. Actual: Elastic Net")
+```
+```{r echo=FALSE}
+grid.arrange(arrangeGrob(rf_plot_clus2, gbm_plot_clus2, ncol = 2))
+grid.arrange(arrangeGrob(lasso_plot_clus2, elastic_net_plot_clus2,ncol = 2))
+```
+
+<br>
+
+####**VIII. Conclusion/Limitations/Future Work**
+
+***Conclusion***
+
+Amytrophic Lateral Sclerosis (ALS) or also known as Lou Gehrig's disease is a fatal neurodegenerative disease that kills the neurons controlling voluntary muscles. Progressive death of these neurons causes muscle atrophy, weakness, paralysis, and ultimately death. The average survival rate of ALS patients is only 3-5 years after symptom onset. However, some individuals perish quickly from the disease such as Lou Gehrig who died only 2 years after symptom onset, while other individuals are slow progressors such as Stephen Hawking who battled the disease for 79 years before dying on 2018.
+
+Although ALS has been known in scientific literature for over 150 years, the disease process, management, and treatment have not been well-understood mostly due to its heterogenity in patients. Thus, in 2012 and 2015, the the DREAM-Phil Bowen ALS Prediction Prize4Life Challenge and DREAM ALS Stratification Prize4Life Challenge were created. Specifically, it invited participants from all over the world to devise a stratification algorithm that will cluster the different types of ALS patients into groups based on their common features. In addtion, the participants were challenged to predict the disease progression in 3-12 months via ALSFRS slope and/or survival rate for 12, 18, and 24 months. 
+
+As group, we chose to focus on the first sub-challenge of predicting the 3-12 month ALSFRS Slope using the Pooled Resource Open-Access ALS Clinical Trials (PRO-ACT). Out of more than 20,000 patients and hundreds of features associated with them (e.g. laboratory works, demographics, and ALS history), we were able to condense the dataset in a manageable number of 3140 patient and 40 variables. 
+
+Using Kmeans algorithm, we were able to cluster the patients into 2 groups. Patients in cluster 2 have seem to be in a more normal functional state because they have higher 0-90 Days ALSFRS Slope, Weight, Forced Vital Capacity (FVC), and Creatinine levels. 
+
+One of the biggest challenge for this project is that only 6 variables are allowed for any of the predictions as stated in the original rules of the ALS Dream Challenge. To solve this, we used Recursive Feature Elimination (RFE) with Random Forests. For the first cluster, the top 6 variables were: Q3_Swallowing, Q2_Salivation, Site_of_Onset, Subject_Liters_Trial_1, Q7_Turning_in_Bed, Study_Arm. For the second cluster, the top 6 variables were Site_of_Onset, Q2_Salivation, Q3_Swallowing, Subject_Liters_Trial_1, ALSFRS_Total, Q5a_Cutting_without_Gastrostomy. 
+
+To predict the 3-12 month ALSFRS slope, we trained and validated 2 tree-based models: Random Forests and Gradient Boosting Machine (GBM) and 2 Regression Shrinkage Models: Lasso Regression and Elastic Net. We used Root Mean Squared Error (RMSE), Mean Squared (MSE), and Mean Absolute Error to evaluate the predictive accuracy of our models. In the end, results show that for cluster 1 ALSFRS slope prediction, the Gradient Boosting Machine model has the lowest RMSE, MSE, and MAE values and therefore has the highest predictive accuracy amongst the 3 other models. For cluster 2, however, random forests outperformed all the other algorithms, having the lowest RMSE, MSE, and MAE.
+
+***Limitations and Future Work***
+
+The biggest limitation of this project is that we are not able to compare the relative predictive accuracy of our models to the actual modesl of the participants of the ALS dream challenge because we do not have access to the leaderboards. In the past actual contests, the predictive accuracy of the models of the participants were assessed via the check_submission on the IBM Server. Based on that, they were able to make revisions to their algorithms up to until the challenge deadline. 
+
+For future directions and further understanding of ALS, we want to work on the the ALS Dream Subchallenge 2 which predicts the 12, 18, and 24 month survival of patients. In addition, we want to use the ALS registries dataset to analyze and perform our predictions. 
+
+<br>
+
+####**XI. References**
+
+[1] https://theanalyticalminds.blogspot.com/2015/04/part-4a-modelling-predicting-amount-of.html?m=1&fbclid=IwAR3fVcUHmT_-IKmLA1PqfxvUX9HqvfVUZfp7Sblhnswj2TeDKCB1sda3_yE
+
+[2] https://consumer.healthday.com/cognitive-health-information-26/lou-gehrig-s-disease-als-news-1/blood-test-might-help-predict-survival-with-lou-gehrig-s-disease-689969.html
+
+[3] https://www.synapse.org/#!Synapse:syn2873386/wiki/391426
